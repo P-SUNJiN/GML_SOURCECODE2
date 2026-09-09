@@ -38,7 +38,23 @@ import numpy as np
 # 값은 아래 FRONTEND 에서 가져온다.
 # 증폭기가 레일에 붙으면 입력이 변해도 출력이 안 따라가서 흔들림이 사라진다.
 # 정상 측정에서는 잡음만으로도 이보다 훨씬 크게 흔들린다(실측 수 mV 이상).
-STUCK_STD_V = 0.0008
+# '출력이 안 움직인다'를 판정하는 문턱.
+#
+# ⚠️ 절대 전압으로 박으면 안 된다. 예전에는 0.0008 V 고정이었는데, 그 값은
+# AD8232(이득 1100배) 기준이었다. 이득 1배인 DC 앞단에서는 같은 잣대가
+# 0.8 mV — 실제 신호와 잡음이 놓이는 바로 그 범위라, 회로가 조용해질수록
+# '포화'라고 우기게 된다. MIN_STD_V 를 고정값으로 두어 DC 데이터가 전멸했던
+# 것과 같은 종류의 실수다.
+#
+# 포화의 물리적 정의는 'ADC 분해능만큼도 안 움직인다'이므로 문턱을 LSB 로 센다.
+# 6.4 LSB 는 AD8232 에서 예전 값 0.0008 V 와 같고, DC 앞단에서는 0.05 mV 가 된다.
+STUCK_STD_LSB = 6.4
+
+
+def stuck_threshold_v():
+    """지금 앞단에서 '안 움직인다'로 볼 출력 흔들림(V)."""
+    lsb_v = FRONTEND.resolution_uv * FRONTEND.gain * 1e-6
+    return STUCK_STD_LSB * lsb_v
 
 # ── 아날로그 앞단 ─────────────────────────────────────────────────────
 # 어떤 앞단(AD8232 / DC 결합)을 쓰는지에 따라 이득·대역·측정 범위가 전부 다르다.
@@ -142,11 +158,24 @@ def sensor_status():
     # 그래서 값만 보는 판정은 진짜 포화를 놓친다. 값이 문턱을 넘었는지보다
     # **출력이 아예 움직이지 않는지**가 포화의 확실한 증거다 — 레일에 붙으면
     # 입력이 변해도 출력이 따라가지 않으므로 표준편차가 무너진다.
-    info["stuck"] = std < STUCK_STD_V
+    thr = stuck_threshold_v()
+    info["stuck_threshold_mv"] = round(thr * 1000, 4)
+    info["stuck"] = std < thr
     if info["stuck"]:
-        where = "상단" if avg > (RAIL_HIGH_V + RAIL_LOW_V) / 2 else "하단"
-        info["baseline_verdict"] = (
-            f"출력이 움직이지 않습니다(흔들림 {std*1000:.2f} mV) — {where} 레일 포화로 보입니다")
+        # 레일 이름은 값이 실제로 그 끝에 가 있을 때만 말한다. 차동 앞단은
+        # 0 이 중심이라 부호만 보고 '하단'이라 부르면 잡음 부호를 읽는 셈이다.
+        span = RAIL_HIGH_V - RAIL_LOW_V
+        near_hi = (RAIL_HIGH_V - avg) < span * 0.1
+        near_lo = (avg - RAIL_LOW_V) < span * 0.1
+        where = "상단" if near_hi else ("하단" if near_lo else None)
+        if where:
+            info["baseline_verdict"] = (
+                f"출력이 움직이지 않습니다(흔들림 {std*1000:.3f} mV) — {where} 레일 포화로 보입니다")
+        else:
+            info["baseline_verdict"] = (
+                f"출력이 거의 움직이지 않습니다(흔들림 {std*1000:.3f} mV, 문턱 {thr*1000:.3f} mV). "
+                f"기준점은 범위 중앙 부근이라 레일 포화는 아닙니다 — 전극이 떨어졌거나 "
+                f"입력이 단락된 상태일 수 있습니다")
     elif avg > RAIL_HIGH_V:
         info["baseline_verdict"] = "상단 레일 포화 — 전극 연결을 확인하세요"
     elif avg < RAIL_LOW_V:
