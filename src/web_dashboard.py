@@ -18,6 +18,7 @@ web_dashboard.py
 
 import argparse
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -42,7 +43,12 @@ _lock = threading.Lock()
 # 대시보드가 멈추므로, 별도 프로세스(subprocess)로 띄우고 출력만 받아온다.
 _job = {"running": False, "kind": None, "label": None, "ok": None,
         "started": None, "finished": None, "step": None, "stopping": False,
-        "stopped": False}
+        "stopped": False,
+        # 수집 진행은 '작업 시작부터의 시간'과 다르다. 작업에는 전극 안정화
+        # 대기(_settle, 20초~3분)가 앞에 붙고, sensor_control 은 그 대기가
+        # 끝난 뒤부터 센다. 두 숫자를 같은 것으로 보여 주면 화면과 터미널이
+        # 서로 다른 초를 말하게 된다. 그래서 수집기가 찍는 값을 그대로 받아 둔다.
+        "collect_sec": None, "collect_total": None}
 _job_log = deque(maxlen=400)
 _job_lock = threading.Lock()
 # 지금 돌고 있는 자식 프로세스. '중지' 버튼이 여기에 SIGINT를 보낸다.
@@ -52,16 +58,30 @@ _job_proc = {"proc": None}
 _pause = threading.Event()
 
 
+# "[sensor_control] 수집 중… 12/300초" / "… 12초" 둘 다 받는다.
+_PROGRESS_RE = re.compile(r"수집 중[…\.]*\s*([\d.]+)(?:\s*/\s*([\d.]+))?\s*초")
+
+
 def _job_say(line):
+    line = line.rstrip()
+    m = _PROGRESS_RE.search(line)
     with _job_lock:
-        _job_log.append(line.rstrip())
+        _job_log.append(line)
+        if m:
+            _job["collect_sec"] = float(m.group(1))
+            _job["collect_total"] = float(m.group(2)) if m.group(2) else None
 
 
 def _job_snapshot():
     with _job_lock:
         d = dict(_job)
         d["log"] = list(_job_log)
-        return d
+    # 브라우저에서 Date.now() - started 로 구하면 파이와 브라우저의 시계 차이가
+    # 그대로 표시 오차가 된다. 경과는 서버가 자기 시계 안에서만 계산한다.
+    if d.get("started"):
+        end = d.get("finished") or time.time()
+        d["elapsed_sec"] = round(end - d["started"], 1)
+    return d
 
 
 def _run_steps(kind, label, steps, cwd, pause_live=False, on_done=None):
@@ -72,7 +92,8 @@ def _run_steps(kind, label, steps, cwd, pause_live=False, on_done=None):
             return False
         _job.update({"running": True, "kind": kind, "label": label, "ok": None,
                      "started": time.time(), "finished": None, "step": steps[0][0],
-                     "stopping": False, "stopped": False})
+                     "stopping": False, "stopped": False,
+                     "collect_sec": None, "collect_total": None})
         _job_log.clear()
 
     def work():

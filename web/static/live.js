@@ -660,8 +660,20 @@
     }
     if (hint) {
       if (j.running) {
-        var sec = j.started ? Math.round(Date.now() / 1000 - j.started) : 0;
-        hint.textContent = "▶ " + (j.label || "") + " · " + (j.step || "") + " (" + sec + "초)";
+        // 경과는 서버가 계산해 준 값을 쓴다. 브라우저 시계로 빼면 파이와의
+        // 시계 차이가 그대로 오차가 된다.
+        var sec = Math.round(j.elapsed_sec != null ? j.elapsed_sec : 0);
+        var t;
+        if (j.collect_sec != null) {
+          // 수집기가 찍는 값을 그대로 보여 준다. 작업 경과와 다른 이유는
+          // 앞에 전극 안정화 대기가 붙기 때문 — 두 숫자를 함께 보여 준다.
+          t = Math.round(j.collect_sec) + (j.collect_total != null
+                ? "/" + Math.round(j.collect_total) + "초 수집" : "초 수집");
+          if (sec) t += " · 경과 " + sec + "초";
+        } else {
+          t = sec + "초";
+        }
+        hint.textContent = "▶ " + (j.label || "") + " · " + (j.step || "") + " (" + t + ")";
       } else if (j.ok === true) {
         hint.textContent = j.stopped ? "⏹ " + (j.label || "") + " 중지됨 (모은 데이터는 저장됨)"
                                      : "✅ " + (j.label || "") + " 완료";
